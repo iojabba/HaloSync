@@ -1,0 +1,47 @@
+# Builds Halo Sync on Windows, macOS and Linux and uploads the binaries.
+# Not run yet: commit this to a GitHub repository to try it.
+name: build
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev qt6-multimedia-dev libqt6sql6-sqlite libtag1-dev ffmpeg ninja-build gstreamer1.0-plugins-good gstreamer1.0-libav
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
+      - run: cd build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with: { name: halo-sync-linux, path: build/halo-sync }
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with: { version: '6.7.3', modules: 'qtmultimedia', arch: 'win64_msvc2019_64' }
+      - name: TagLib via vcpkg
+        run: vcpkg install taglib:x64-windows
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHALO_BUILD_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake --build build --config Release
+      - name: Bundle Qt and TagLib
+        run: |
+          mkdir dist
+          copy build\Release\halo-sync.exe dist\
+          copy "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" dist\
+          windeployqt --release --no-translations dist\halo-sync.exe
+      - uses: actions/upload-artifact@v4
+        with: { name: halo-sync-windows, path: dist }
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install qt taglib pkg-config ninja ffmpeg
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" && cmake --build build
+      - run: cd build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure
+      - run: "$(brew --prefix qt)/bin/macdeployqt build/halo-sync.app -dmg"
+      - uses: actions/upload-artifact@v4
+        with: { name: halo-sync-macos, path: build/halo-sync.dmg }
