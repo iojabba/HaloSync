@@ -309,6 +309,34 @@ void Database::setRating(qint64 id, int rating)
     emit tracksChanged();
 }
 
+void Database::mergeTrackStats(qint64 keep, const QVector<qint64> &from)
+{
+    if (from.isEmpty()) return;
+    begin();
+    for (qint64 id : from) {
+        if (id == keep) continue;
+        QSqlQuery q(m_db);
+        q.prepare("UPDATE tracks SET play_count = play_count + (SELECT play_count FROM tracks WHERE id = :f),"
+                  " last_played = MAX(last_played, (SELECT last_played FROM tracks WHERE id = :f)),"
+                  " rating = CASE WHEN rating = 0 THEN (SELECT rating FROM tracks WHERE id = :f) ELSE rating END,"
+                  " date_added = MIN(date_added, (SELECT date_added FROM tracks WHERE id = :f))"
+                  " WHERE id = :k");
+        q.bindValue(":f", id);
+        q.bindValue(":k", keep);
+        q.exec();
+        for (const char *sql : {"UPDATE history SET track_id = :k WHERE track_id = :f",
+                                "UPDATE playlist_items SET track_id = :k WHERE track_id = :f"}) {
+            QSqlQuery u(m_db);
+            u.prepare(QString::fromLatin1(sql));
+            u.bindValue(":k", keep);
+            u.bindValue(":f", id);
+            u.exec();
+        }
+    }
+    m_pendingTracksChanged = true;
+    commit();
+}
+
 void Database::recordPlay(qint64 id)
 {
     const qint64 ts = now();
@@ -582,6 +610,88 @@ void Database::removeSyncItem(qint64 deviceId, const SyncItem &item)
     q.addBindValue(item.key);
     q.exec();
     emit devicesChanged();
+}
+
+// ------------------------------------------------------------------ radio
+QVector<RadioStation> Database::radioStations()
+{
+    QVector<RadioStation> out;
+    QSqlQuery q(m_db);
+    q.exec("SELECT id, name, url, homepage, favicon, tags, country, codec, bitrate FROM radio_stations ORDER BY name COLLATE NOCASE");
+    while (q.next()) {
+        RadioStation s;
+        s.id = q.value(0).toLongLong();
+        s.name = q.value(1).toString();
+        s.url = q.value(2).toString();
+        s.homepage = q.value(3).toString();
+        s.favicon = q.value(4).toString();
+        s.tags = q.value(5).toString();
+        s.country = q.value(6).toString();
+        s.codec = q.value(7).toString();
+        s.bitrate = q.value(8).toInt();
+        out << s;
+    }
+    return out;
+}
+
+qint64 Database::addRadioStation(const RadioStation &s)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO radio_stations(name, url, homepage, favicon, tags, country, codec, bitrate, added_at)"
+              " VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET name=excluded.name");
+    for (const QVariant &v : {QVariant(s.name), QVariant(s.url), QVariant(s.homepage), QVariant(s.favicon), QVariant(s.tags),
+                              QVariant(s.country), QVariant(s.codec), QVariant(s.bitrate), QVariant(now())})
+        q.addBindValue(v);
+    if (!q.exec()) { m_lastError = q.lastError().text(); return 0; }
+    QSqlQuery id(m_db);
+    id.prepare("SELECT id FROM radio_stations WHERE url = ?");
+    id.addBindValue(s.url);
+    id.exec();
+    emit radioChanged();
+    return id.next() ? id.value(0).toLongLong() : 0;
+}
+
+void Database::removeRadioStation(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM radio_stations WHERE id = ?");
+    q.addBindValue(id);
+    q.exec();
+    emit radioChanged();
+}
+
+// ------------------------------------------------------------------ history
+QVector<QPair<qint64, qint64>> Database::history(qint64 since)
+{
+    QVector<QPair<qint64, qint64>> out;
+    QSqlQuery q(m_db);
+    q.prepare("SELECT track_id, played_at FROM history WHERE played_at >= ? ORDER BY played_at DESC");
+    q.addBindValue(since);
+    q.exec();
+    while (q.next()) out.push_back({q.value(0).toLongLong(), q.value(1).toLongLong()});
+    return out;
+}
+
+QString Database::cachedHash(const QString &path, qint64 size, qint64 mtime)
+{
+    QSqlQuery q(m_db);
+    q.prepare("SELECT hash FROM file_hashes WHERE path = ? AND size = ? AND mtime = ?");
+    q.addBindValue(path);
+    q.addBindValue(size);
+    q.addBindValue(mtime);
+    q.exec();
+    return q.next() ? q.value(0).toString() : QString();
+}
+
+void Database::storeHash(const QString &path, qint64 size, qint64 mtime, const QString &hash)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT OR REPLACE INTO file_hashes(path, size, mtime, hash) VALUES(?,?,?,?)");
+    q.addBindValue(path);
+    q.addBindValue(size);
+    q.addBindValue(mtime);
+    q.addBindValue(hash);
+    q.exec();
 }
 
 } // namespace halo

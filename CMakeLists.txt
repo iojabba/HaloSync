@@ -55,6 +55,9 @@ add_library(halocore STATIC
     src/core/Loudness.h         src/core/Loudness.cpp
     src/core/ReplayGainJob.h    src/core/ReplayGainJob.cpp
     src/core/Lyrics.h           src/core/Lyrics.cpp
+    src/core/ArtFinder.h        src/core/ArtFinder.cpp
+    src/core/Radio.h            src/core/Radio.cpp
+    src/core/Discover.h         src/core/Discover.cpp
 )
 target_include_directories(halocore PUBLIC src/core)
 target_link_libraries(halocore PUBLIC Qt6::Core Qt6::Gui Qt6::Sql Qt6::Network Qt6::Concurrent ${HALO_TAGLIB} ${HALO_FFMPEG})
@@ -94,7 +97,7 @@ install(TARGETS halo-sync RUNTIME DESTINATION bin BUNDLE DESTINATION .)
 # ---------------------------------------------------------------- tests
 if(HALO_BUILD_TESTS AND Qt6Test_FOUND)
     enable_testing()
-    foreach(t test_autoplaylist test_playlistio test_library test_sync test_decoder)
+    foreach(t test_autoplaylist test_playlistio test_library test_sync test_decoder test_online test_features)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE halocore Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})
