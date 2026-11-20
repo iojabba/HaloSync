@@ -69,7 +69,7 @@ jobs:
 
   # Every push to main replaces the "latest" pre-release with fresh binaries.
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.windows.result == 'success'
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions: { contents: write }
@@ -79,8 +79,11 @@ jobs:
       - name: Publish the latest build
         env: { GH_TOKEN: '${{ github.token }}', GH_REPO: '${{ github.repository }}' }
         run: |
-          (cd out/halo-sync-linux && chmod +x halo-sync && tar czf ../../halo-sync-linux-x86_64.tar.gz halo-sync)
+          files=(out/halo-sync-windows/halo-sync-windows-x64.zip)
+          if [ -f out/halo-sync-linux/halo-sync ]; then
+            (cd out/halo-sync-linux && chmod +x halo-sync && tar czf ../../halo-sync-linux-x86_64.tar.gz halo-sync)
+            files+=(halo-sync-linux-x86_64.tar.gz)
+          fi
           gh release delete latest --cleanup-tag --yes || true
           gh release create latest --target "$GITHUB_SHA" --prerelease --title "Latest build" \
-            --notes "Built automatically from commit $GITHUB_SHA. Windows: unzip and run halo-sync.exe." \
-            out/halo-sync-windows/halo-sync-windows-x64.zip halo-sync-linux-x86_64.tar.gz
+            --notes "Built automatically from commit $GITHUB_SHA. Windows: unzip and run halo-sync.exe." "${files[@]}"

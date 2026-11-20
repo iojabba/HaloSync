@@ -71,7 +71,10 @@ private slots:
         QCOMPARE(p.count(SyncAction::Copy), 1);
         QCOMPARE(p.count(SyncAction::Transcode), 2);   // flac + opus aren't in the device's format list
         QVERIFY(!p.overfilled());
-        TrackList pl = {all[0], all[1]};
+        // allTracks() order follows scan order, which depends on the file system.
+        TrackList pl;
+        for (const Track &t : all) if (t.album == "Hi*") pl << t;
+        QCOMPARE(pl.size(), 2);
         const SyncReport r = SyncEngine::execute(device.path(), p, opts, {{"Favs", pl}});
         QVERIFY2(r.failed == 0, qPrintable(r.errors.join('\n')));
         QCOMPARE(r.copied, 1);
