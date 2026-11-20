@@ -249,16 +249,24 @@ SyncPage::SyncPage(Library *library, QWidget *parent) : QWidget(parent), m_lib(l
     m_poll.setInterval(4000);
     connect(&m_poll, &QTimer::timeout, this, &SyncPage::checkZunes);
     m_poll.start();
-    checkZunes();
+    QTimer::singleShot(1000, this, &SyncPage::checkZunes);   // after the main window has connected to us
     refreshDevices();
 }
 
 void SyncPage::checkZunes()
 {
     const auto zunes = DeviceDetect::connectedZunes();
-    if (zunes.isEmpty()) { m_zune->hide(); return; }
-    m_zune->setText(QStringLiteral("%1 detected. %2").arg(zunes.first().product, DeviceDetect::zuneNotice()));
+    QStringList models;
+    for (const UsbDevice &z : zunes) models << z.product;
+    if (models.isEmpty()) { m_zune->hide(); m_zuneModels.clear(); return; }
+    const QString who = models.join(QStringLiteral(" and "));
+    m_zune->setText(QStringLiteral("<b>%1 connected: sync isn't supported.</b><br>%2").arg(who.toHtmlEscaped(),
+                                                                                          DeviceDetect::zuneNotice().toHtmlEscaped()));
     m_zune->show();
+    if (models != m_zuneModels) {      // newly plugged in: tell the user once
+        m_zuneModels = models;
+        emit zuneConnected(who);
+    }
 }
 
 void SyncPage::refreshDevices()

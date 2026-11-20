@@ -7,6 +7,7 @@
 #include "QuickplayPage.h"
 #include "SettingsPage.h"
 #include "SyncPage.h"
+#include "DeviceDetect.h"
 #include "TagIO.h"
 #include "Theme.h"
 #include "TrackModel.h"
@@ -74,6 +75,13 @@ MainWindow::MainWindow(Library *library, Player *player, QWidget *parent)
     connect(m_collection, &CollectionPage::statusMessage, this, &MainWindow::showStatus);
     connect(m_collection, &CollectionPage::syncNowRequested, this, [this](qint64 id) { m_sync->syncDevice(id); });
     connect(m_sync, &SyncPage::statusMessage, this, &MainWindow::showStatus);
+    connect(m_sync, &SyncPage::zuneConnected, this, [this](const QString &model) {
+        showStatus(QStringLiteral("%1 connected. Halo Sync can't sync with Zune players.").arg(model));
+        QMessageBox box(QMessageBox::Information, QStringLiteral("%1 connected").arg(model),
+                        QStringLiteral("Halo Sync recognised your %1, but it can't sync with it.").arg(model), QMessageBox::Ok, this);
+        box.setInformativeText(DeviceDetect::zuneNotice());
+        box.exec();
+    });
     connect(m_settings, &SettingsPage::statusMessage, this, &MainWindow::showStatus);
     connect(m_settings, &SettingsPage::themeChanged, this, [this] {
         Theme::apply(*qApp);

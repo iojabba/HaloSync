@@ -1,4 +1,5 @@
 #include "Database.h"
+#include "DeviceDetect.h"
 #include "Discover.h"
 #include "Library.h"
 #include "Paths.h"
@@ -103,6 +104,15 @@ private slots:
             if (s.title == "you haven't played") { QCOMPARE(s.items.size(), 1); QCOMPARE(s.items[0].label, QString("Fresh")); }  // Deep is too new
             if (s.title == "more like your favourites") QCOMPARE(s.items[0].label, QString("Rare"));
         }
+    }
+
+    void zuneModels()
+    {
+        QCOMPARE(DeviceDetect::zuneModel("063E", "MTP USB Device"), QString("Zune HD"));
+        QCOMPARE(DeviceDetect::zuneModel("0710", ""), QString("Zune"));
+        QCOMPARE(DeviceDetect::zuneModel("0999", "Zune 80"), QString("Zune 80"));
+        QVERIFY(DeviceDetect::zuneModel("07a5", "Microsoft Wireless Mouse").isEmpty());
+        QVERIFY(!DeviceDetect::zuneNotice().isEmpty());
     }
 
     void radioParsing()

@@ -60,6 +60,11 @@ add_library(halocore STATIC
     src/core/Discover.h         src/core/Discover.cpp
 )
 target_include_directories(halocore PUBLIC src/core)
+if(WIN32)
+    target_link_libraries(halocore PRIVATE setupapi)
+elseif(APPLE)
+    target_link_libraries(halocore PRIVATE "-framework IOKit" "-framework CoreFoundation")
+endif()
 target_link_libraries(halocore PUBLIC Qt6::Core Qt6::Gui Qt6::Sql Qt6::Network Qt6::Concurrent ${HALO_TAGLIB} ${HALO_FFMPEG})
 
 # ---------------------------------------------------------------- application

@@ -2,6 +2,7 @@
 #include "SyncEngine.h"
 #include <QFutureWatcher>
 #include <QTimer>
+#include <QStringList>
 #include <QWidget>
 #include <atomic>
 
@@ -41,6 +42,7 @@ public:
 public slots:
     void syncDevice(qint64 deviceId);
 signals:
+    void zuneConnected(const QString &model);   // a Zune was plugged in (it can't be synced)
     void statusMessage(const QString &text);
 
 private:
@@ -60,6 +62,7 @@ private:
     Database *m_db;
     QListWidget *m_devices;
     QLabel *m_zune;
+    QStringList m_zuneModels;
     QWidget *m_detail;
     QLineEdit *m_name, *m_path, *m_formats;
     QComboBox *m_mode, *m_codec, *m_bitrate;
