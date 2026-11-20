@@ -1,7 +1,12 @@
 # Builds Halo Sync on Windows, macOS and Linux and uploads the binaries.
-# Not run yet: commit this to a GitHub repository to try it.
+# A tag like v0.1.0 also publishes the binaries as a GitHub Release.
 name: build
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   linux:
@@ -32,11 +37,27 @@ jobs:
           copy build\Release\halo-sync.exe dist\
           copy "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" dist\
           windeployqt --release --no-translations dist\halo-sync.exe
+          # Visual C++ runtime, so the app runs on PCs without the redistributable
+          foreach ($f in 'msvcp140.dll','msvcp140_1.dll','vcruntime140.dll','vcruntime140_1.dll') { copy "$env:SystemRoot\System32\$f" dist\ }
+      - name: Bundle ffmpeg (LGPL build) for format conversion
+        run: |
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip -OutFile ff.zip
+          Expand-Archive ff.zip ff
+          $d = Get-ChildItem ff -Directory | Select-Object -First 1
+          copy "$($d.FullName)\bin\ffmpeg.exe" dist\
+          copy "$($d.FullName)\LICENSE.txt" dist\ffmpeg-LICENSE.txt
+          copy README.md dist\
+      - name: Smoke test (start, scan an empty library, exit)
+        run: |
+          $p = Start-Process dist\halo-sync.exe -ArgumentList '--data-dir','smoke','--scan','--list' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "halo-sync.exe exited with $($p.ExitCode)" }
+          dist\ffmpeg.exe -hide_banner -version | Select-Object -First 1
+      - run: Compress-Archive dist\* halo-sync-windows-x64.zip
       - uses: actions/upload-artifact@v4
-        with: { name: halo-sync-windows, path: dist }
+        with: { name: halo-sync-windows, path: halo-sync-windows-x64.zip }
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - run: brew install qt taglib pkg-config ninja ffmpeg
@@ -45,3 +66,20 @@ jobs:
       - run: "$(brew --prefix qt)/bin/macdeployqt build/halo-sync.app -dmg"
       - uses: actions/upload-artifact@v4
         with: { name: halo-sync-macos, path: build/halo-sync.dmg }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out }
+      - run: |
+          cd out/halo-sync-linux && chmod +x halo-sync && tar czf ../../halo-sync-linux-x86_64.tar.gz halo-sync
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            out/halo-sync-windows/halo-sync-windows-x64.zip
+            halo-sync-linux-x86_64.tar.gz

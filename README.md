@@ -1,6 +1,6 @@
 # Halo Sync
 
-Halo Sync is a music library manager, player and drag-and-drop USB sync tool. It runs on Windows, macOS and Linux. It is an independent clean-room project built from the behavioral specification in [`../zune-cleanroom/SPEC.md`](../zune-cleanroom/SPEC.md). It contains no Microsoft code or assets.
+Halo Sync is a music library manager, player and drag-and-drop USB sync tool. It runs on Windows, macOS and Linux. It is an independent clean-room project built from the behavioral specification in [`docs/SPEC.md`](docs/SPEC.md). It contains no Microsoft code or assets.
 
 > **Zune players are not supported.** A Zune only allows file access after Microsoft's MTPZ authentication, and this project deliberately doesn't implement it (SPEC §4.1). When a Zune is plugged in, Halo Sync recognizes it and explains this. It syncs to USB drives, SD cards, and other players that show up as a drive or folder.
 
@@ -50,7 +50,7 @@ Playback on Linux uses GStreamer, so install the plugins above.
    ```
 4. Copy `tag.dll` (and its `zlib` DLL) from `vcpkg\installed\x64-windows\bin` next to the exe. Also put `ffmpeg.exe` there, or set its path in Settings.
 
-`.github/workflows/build.yml` does all of this on GitHub Actions for Windows, macOS and Linux. It hasn't been run yet.
+`.github/workflows/build.yml` does all of this on GitHub Actions for Windows, macOS and Linux. Pushing a `v*` tag publishes the Windows zip (with ffmpeg included) and the Linux binary as a GitHub Release.
 
 ### macOS
 ```sh
