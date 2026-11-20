@@ -1,5 +1,5 @@
 # Builds Halo Sync on Windows, macOS and Linux and uploads the binaries.
-# A tag like v0.1.0 also publishes the binaries as a GitHub Release.
+# Each push to main also publishes the binaries as the "latest" GitHub pre-release.
 name: build
 on:
   push:
@@ -67,19 +67,20 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: halo-sync-macos, path: build/halo-sync.dmg }
 
+  # Every push to main replaces the "latest" pre-release with fresh binaries.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:
       - uses: actions/download-artifact@v4
         with: { path: out }
-      - run: |
-          cd out/halo-sync-linux && chmod +x halo-sync && tar czf ../../halo-sync-linux-x86_64.tar.gz halo-sync
-      - uses: softprops/action-gh-release@v2
-        with:
-          prerelease: true
-          files: |
-            out/halo-sync-windows/halo-sync-windows-x64.zip
-            halo-sync-linux-x86_64.tar.gz
+      - name: Publish the latest build
+        env: { GH_TOKEN: '${{ github.token }}', GH_REPO: '${{ github.repository }}' }
+        run: |
+          (cd out/halo-sync-linux && chmod +x halo-sync && tar czf ../../halo-sync-linux-x86_64.tar.gz halo-sync)
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest --target "$GITHUB_SHA" --prerelease --title "Latest build" \
+            --notes "Built automatically from commit $GITHUB_SHA. Windows: unzip and run halo-sync.exe." \
+            out/halo-sync-windows/halo-sync-windows-x64.zip halo-sync-linux-x86_64.tar.gz

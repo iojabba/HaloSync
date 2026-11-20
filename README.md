@@ -50,7 +50,7 @@ Playback on Linux uses GStreamer, so install the plugins above.
    ```
 4. Copy `tag.dll` (and its `zlib` DLL) from `vcpkg\installed\x64-windows\bin` next to the exe. Also put `ffmpeg.exe` there, or set its path in Settings.
 
-`.github/workflows/build.yml` does all of this on GitHub Actions for Windows, macOS and Linux. Pushing a `v*` tag publishes the Windows zip (with ffmpeg included) and the Linux binary as a GitHub Release.
+`.github/workflows/build.yml` does all of this on GitHub Actions for Windows, macOS and Linux. Each push to `main` publishes the Windows zip (with ffmpeg included) and the Linux binary as the "latest" pre-release under Releases.
 
 ### macOS
 ```sh
