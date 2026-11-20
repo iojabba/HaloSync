@@ -97,6 +97,8 @@ std::optional<Track> TagIO::read(const QString &path)
     if (!t.year) t.year = leadingInt(firstProp(props, "DATE"));
     t.rgTrackGain = parseGain(firstProp(props, "REPLAYGAIN_TRACK_GAIN"));
     t.rgAlbumGain = parseGain(firstProp(props, "REPLAYGAIN_ALBUM_GAIN"));
+    t.rgTrackPeak = parseGain(firstProp(props, "REPLAYGAIN_TRACK_PEAK"));
+    t.rgAlbumPeak = parseGain(firstProp(props, "REPLAYGAIN_ALBUM_PEAK"));
 
     if (TagLib::AudioProperties *ap = f.audioProperties()) {
         t.durationMs = ap->lengthInMilliseconds();
@@ -144,6 +146,40 @@ bool TagIO::write(const QString &path, const TagEdit &e, QString *error)
         return false;
     }
     return true;
+}
+
+bool TagIO::writeReplayGain(const QString &path, double trackGain, double trackPeak, double albumGain,
+                            double albumPeak, QString *error)
+{
+    TagLib::FileRef f(HALO_FN(path), false);
+    if (f.isNull() || !f.file() || f.file()->readOnly()) {
+        if (error) *error = QStringLiteral("Can't write tags to %1").arg(path);
+        return false;
+    }
+    TagLib::PropertyMap props = f.file()->properties();
+    auto put = [&](const char *key, const QString &v) { props.replace(key, TagLib::StringList(ts(v))); };
+    put("REPLAYGAIN_TRACK_GAIN", QStringLiteral("%1 dB").arg(trackGain, 0, 'f', 2));
+    put("REPLAYGAIN_TRACK_PEAK", QString::number(trackPeak, 'f', 6));
+    if (albumPeak > 0) {
+        put("REPLAYGAIN_ALBUM_GAIN", QStringLiteral("%1 dB").arg(albumGain, 0, 'f', 2));
+        put("REPLAYGAIN_ALBUM_PEAK", QString::number(albumPeak, 'f', 6));
+    }
+    f.file()->setProperties(props);
+    if (!f.save()) {
+        if (error) *error = QStringLiteral("Saving tags to %1 failed").arg(path);
+        return false;
+    }
+    return true;
+}
+
+QString TagIO::embeddedLyrics(const QString &path)
+{
+    TagLib::FileRef f(HALO_FN(path), false);
+    if (f.isNull() || !f.file()) return {};
+    const TagLib::PropertyMap props = f.file()->properties();
+    auto it = props.find("LYRICS");
+    if (it == props.end() || it->second.isEmpty()) return {};
+    return QString::fromStdString(it->second.front().to8Bit(true));
 }
 
 bool TagIO::hasEmbeddedArt(const QString &path)

@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QUuid>
 #include <QVariant>
+#include <QSet>
 
 namespace halo {
 
@@ -15,7 +16,7 @@ qint64 now() { return QDateTime::currentSecsSinceEpoch(); }
 const char *kTrackColumns =
     "id, path, title, artist, album_artist, album, genre, composer, year, track_no, disc_no, "
     "duration_ms, bitrate, sample_rate, size, mtime, date_added, last_played, play_count, rating, "
-    "rg_track_gain, rg_album_gain, has_art, format";
+    "rg_track_gain, rg_album_gain, has_art, format, rg_track_peak, rg_album_peak";
 
 Track readTrack(const QSqlQuery &q)
 {
@@ -45,6 +46,8 @@ Track readTrack(const QSqlQuery &q)
     t.rgAlbumGain = q.value(c++).toDouble();
     t.hasArt      = q.value(c++).toBool();
     t.format      = q.value(c++).toString();
+    t.rgTrackPeak = q.value(c++).toDouble();
+    t.rgAlbumPeak = q.value(c++).toDouble();
     return t;
 }
 } // namespace
@@ -109,9 +112,24 @@ bool Database::createSchema()
         " UNIQUE(device_id, kind, key))",
         "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)",
         "INSERT OR IGNORE INTO meta(k, v) VALUES('schema', '1')",
+        // Schema 2 (0.2): radio favourites and cached content hashes for the duplicate finder.
+        "CREATE TABLE IF NOT EXISTS radio_stations (id INTEGER PRIMARY KEY, name TEXT, url TEXT UNIQUE NOT NULL,"
+        " homepage TEXT, favicon TEXT, tags TEXT, country TEXT, codec TEXT, bitrate INTEGER DEFAULT 0, added_at INTEGER)",
+        "CREATE TABLE IF NOT EXISTS file_hashes (path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hash TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_history_track ON history(track_id, played_at)",
     };
     for (const char *s : stmts)
         if (!exec(QString::fromUtf8(s))) return false;
+    // Columns added after schema 1.
+    QSet<QString> cols;
+    QSqlQuery info(m_db);
+    info.exec("PRAGMA table_info(tracks)");
+    while (info.next()) cols.insert(info.value(1).toString());
+    for (const char *c : {"rg_track_peak", "rg_album_peak"})
+        if (!cols.contains(QLatin1String(c)) &&
+            !exec(QStringLiteral("ALTER TABLE tracks ADD COLUMN %1 REAL DEFAULT 0").arg(QLatin1String(c))))
+            return false;
+    exec("UPDATE meta SET v='2' WHERE k='schema'");
     return true;
 }
 
@@ -218,14 +236,15 @@ qint64 Database::upsertTrack(const Track &t)
     QSqlQuery q(m_db);
     q.prepare(
         "INSERT INTO tracks(path, title, artist, album_artist, album, genre, composer, year, track_no, disc_no,"
-        " duration_ms, bitrate, sample_rate, size, mtime, date_added, rg_track_gain, rg_album_gain, has_art, format)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " duration_ms, bitrate, sample_rate, size, mtime, date_added, rg_track_gain, rg_album_gain, has_art, format,"
+        " rg_track_peak, rg_album_peak)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(path) DO UPDATE SET title=excluded.title, artist=excluded.artist, album_artist=excluded.album_artist,"
         " album=excluded.album, genre=excluded.genre, composer=excluded.composer, year=excluded.year,"
         " track_no=excluded.track_no, disc_no=excluded.disc_no, duration_ms=excluded.duration_ms,"
         " bitrate=excluded.bitrate, sample_rate=excluded.sample_rate, size=excluded.size, mtime=excluded.mtime,"
         " rg_track_gain=excluded.rg_track_gain, rg_album_gain=excluded.rg_album_gain, has_art=excluded.has_art,"
-        " format=excluded.format");
+        " format=excluded.format, rg_track_peak=excluded.rg_track_peak, rg_album_peak=excluded.rg_album_peak");
     q.addBindValue(t.path);
     q.addBindValue(t.title);
     q.addBindValue(t.artist);
@@ -246,6 +265,8 @@ qint64 Database::upsertTrack(const Track &t)
     q.addBindValue(t.rgAlbumGain);
     q.addBindValue(t.hasArt ? 1 : 0);
     q.addBindValue(t.format);
+    q.addBindValue(t.rgTrackPeak);
+    q.addBindValue(t.rgAlbumPeak);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         logLine("db", "upsert failed for " + t.path + ": " + m_lastError);
