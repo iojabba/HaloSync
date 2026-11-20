@@ -1,8 +1,10 @@
 #pragma once
 #include "Track.h"
+#include "Radio.h"
 #include <QObject>
 #include <QSqlDatabase>
 #include <QHash>
+#include <QSet>
 #include <QJsonObject>
 #include <optional>
 
@@ -67,8 +69,13 @@ public:
     void   upsertTracks(const TrackList &tracks);
     void   removeTrack(qint64 id);
     void   removeTracks(const QVector<qint64> &ids);
+    void   ignorePaths(const QStringList &paths);    // kept on disk, left out of scans
+    QSet<QString> ignoredPaths();
     void   setRating(qint64 id, int rating);
     void   recordPlay(qint64 id);
+    // Duplicate clean-up: adds the play counts, history, ratings and playlist
+    // entries of `from` to `keep`, so removing the copies loses nothing.
+    void   mergeTrackStats(qint64 keep, const QVector<qint64> &from);
     void   setHasArt(const QString &dirPath, bool hasArt);
 
     // Playlists (SPEC §2.5)
@@ -99,6 +106,17 @@ public:
     void   removeSyncItem(qint64 deviceId, const SyncItem &item);
 
     // Transactions for bulk updates
+    // Radio favourites
+    QVector<RadioStation> radioStations();
+    qint64 addRadioStation(const RadioStation &s);
+    void   removeRadioStation(qint64 id);
+
+    // Listening history: (track id, played at) pairs, newest first, since `since` (epoch s).
+    QVector<QPair<qint64, qint64>> history(qint64 since = 0);
+    // Cached content hashes for the duplicate finder.
+    QString cachedHash(const QString &path, qint64 size, qint64 mtime);
+    void    storeHash(const QString &path, qint64 size, qint64 mtime, const QString &hash);
+
     void begin();
     void commit();
 
@@ -107,6 +125,7 @@ signals:
     void playlistsChanged();
     void pinsChanged();
     void devicesChanged();
+    void radioChanged();
 
 private:
     bool exec(const QString &sql);

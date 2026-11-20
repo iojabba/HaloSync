@@ -23,6 +23,10 @@ namespace TagIO {
     bool hasFolderArt(const QString &dirPath);
     QString folderArtPath(const QString &dirPath); // existing cover image or empty
     void apply(Track &t, const TagEdit &edit);   // mirror an edit into a Track
+    // ReplayGain 2.0 tags (REPLAYGAIN_TRACK_GAIN/PEAK, and album values when albumPeak > 0).
+    bool writeReplayGain(const QString &path, double trackGain, double trackPeak,
+                         double albumGain, double albumPeak, QString *error = nullptr);
+    QString embeddedLyrics(const QString &path);  // LYRICS / USLT, empty if none
 }
 
 } // namespace halo

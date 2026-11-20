@@ -352,13 +352,13 @@ Each item from the wishlist was checked against the Phase 1 rule: no licensing, 
 - Podcasts (RSS, search, keep N, OPML), audiobooks with chapters, .lrc lyrics.
 - Scrobbling, Discord Rich Presence.
 
-**Phase 2b additions (Eric approved 2026-11-19), after the Windows build:**
+**Phase 2b additions (Eric approved 2026-11-19). Status: all six are in 0.2.0.**
 - **Gapless playback.** Use a custom decode-and-mix audio engine (FFmpeg decode into one QAudioSink stream), so the next song starts with no gap. Read encoder delay and padding (LAME/iTunNORM/iTunSMPB) so gapless albums play cleanly. This fixes the known gap in 0.1.0.
 - **ReplayGain, extended.** 0.1.0 applies existing ReplayGain tags (track gain only). Add a track/album/off mode, a pre-amp and clipping protection, and a "calculate loudness" job for songs without tags (FFmpeg ebur128, written back as REPLAYGAIN_* tags).
-- **Automatic album art and lyrics.** A background job finds missing covers through MusicBrainz and Cover Art Archive, using the existing lookup code, and saves them as embedded or folder art (user's choice). Lyrics are fetched from LRCLIB (free, open API, synced .lrc where available), shown in Now Playing with line-by-line highlighting, and cached next to the file as .lrc. Both can be turned off, and both respect rate limits.
+- **Automatic album art and lyrics.** A background job finds missing covers through MusicBrainz and Cover Art Archive, using the existing lookup code, and saves them as embedded or folder art (user's choice). Lyrics come from a .lrc file next to the song, the song's tags, or LRCLIB (free, open API, synced .lrc where available). They show in Now Playing with line-by-line highlighting and are cached in Halo Sync's data folder, so the user's music folders aren't changed. Both can be turned off, and both respect rate limits.
 - **Duplicate finder, extended.** 0.1.0 reports duplicates by matching tags. Add exact-file matching (size plus content hash), a "same song, different format/bitrate" group, and a review screen that keeps the best copy (highest quality, has art, most plays). It moves the rest to the trash or removes them from the collection, and play counts and ratings are merged into the kept copy.
 - **Internet radio.** A new Radio view: search stations through the Radio Browser community directory (open API), favorites, add a stream by URL, read M3U/PLS station files, and show ICY now-playing titles. Optionally, played titles can be logged to history.
-- **Discover view.** Uses local listening history only: "back in rotation" (loved but not played lately), "you haven't played" (added but never played), top artists/albums by period, artists similar to your favorites (MusicBrainz tags/relationships; Last.fm optional with the user's own key), and "on this day" listening.
+- **Discover view.** Uses local listening history only: "back in rotation" (loved but not played lately), "you haven't played" (added but never played), top artists/albums by period, artists from the genres of your favourite artists (computed locally; online similarity via MusicBrainz or Last.fm is left for later), and "on this day" listening.
 
 **Phase 2c:**
 - Smart DJ (local + optional Last.fm), Mixview, profile card.

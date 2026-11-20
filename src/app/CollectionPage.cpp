@@ -1,4 +1,9 @@
 #include "CollectionPage.h"
+#include "ArtFinder.h"
+#include "DiscoverView.h"
+#include "DuplicateDialog.h"
+#include "LyricsPanel.h"
+#include "RadioView.h"
 #include "AlbumLookupDialog.h"
 #include "AutoPlaylistDialog.h"
 #include "MergeList.h"
@@ -65,7 +70,7 @@ CollectionPage::CollectionPage(Library *library, Player *player, QWidget *parent
     // Sub-pivots + search
     auto *top = new QHBoxLayout;
     m_pivots = new QButtonGroup(this);
-    m_viewNames = {"artists", "albums", "genres", "songs", "playlists", "now playing", "reports"};
+    m_viewNames = {"artists", "albums", "genres", "songs", "playlists", "now playing", "radio", "discover", "reports"};
     for (int i = 0; i < m_viewNames.size(); ++i) {
         auto *b = new QPushButton(m_viewNames[i]);
         b->setObjectName("subpivot");
@@ -92,17 +97,33 @@ CollectionPage::CollectionPage(Library *library, Player *player, QWidget *parent
     m_stack->addWidget(buildSongs());
     m_stack->addWidget(buildPlaylists());
     m_stack->addWidget(buildNowPlaying());
+    m_radio = new RadioView(m_db, m_player);
+    connect(m_radio, &RadioView::statusMessage, this, &CollectionPage::statusMessage);
+    m_stack->addWidget(m_radio);
+    m_discover = new DiscoverView(m_db, m_player, [this](const Track &t) { return albumIcon(t); });
+    m_stack->addWidget(m_discover);
     m_stack->addWidget(buildReports());
     lay->addWidget(m_stack, 1);
 
     connect(m_pivots, &QButtonGroup::idClicked, this, [this](int id) {
         m_stack->setCurrentIndex(id);
-        Paths::settings()->setValue("ui/collectionView", id);
-        if (id == 6) refreshReports();
+        Paths::settings()->setValue("ui/collectionViewName", m_viewNames[id]);
+        if (m_viewNames[id] == QLatin1String("reports")) refreshReports();
     });
-    const int startView = Paths::settings()->value("ui/collectionView", 0).toInt();
-    m_pivots->button(qBound(0, startView, 6))->setChecked(true);
-    m_stack->setCurrentIndex(qBound(0, startView, 6));
+    const int startView = qMax(0, int(m_viewNames.indexOf(Paths::settings()->value("ui/collectionViewName", "artists").toString())));
+    m_pivots->button(startView)->setChecked(true);
+    m_stack->setCurrentIndex(startView);
+
+    // Missing covers are looked up after each scan (Settings › automatic album art).
+    m_artFinder = new ArtFinder(m_lib, this);
+    connect(m_lib, &Library::scanFinished, this, [this] { if (ArtFinder::enabled()) m_artFinder->start(); });
+    connect(m_artFinder, &ArtFinder::progress, this, [this](int done, int total) {
+        emit statusMessage(QStringLiteral("Looking up album art: %1 of %2").arg(done).arg(total));
+    });
+    connect(m_artFinder, &ArtFinder::finished, this, [this](int found, int tried) {
+        if (tried) emit statusMessage(QStringLiteral("Found album art for %1 of %2 albums.").arg(found).arg(tried));
+        if (found) { m_iconCache.clear(); m_reloadTimer.start(); }
+    });
 
     connect(m_search, &QLineEdit::textChanged, this, &CollectionPage::applySearch);
     m_reloadTimer.setSingleShot(true);
@@ -395,9 +416,26 @@ QWidget *CollectionPage::buildNowPlaying()
     row->addWidget(save);
     row->addWidget(clear);
     l->addLayout(row);
+    auto *lyricsBtn = flatButton(QStringLiteral("lyrics"));
+    lyricsBtn->setCheckable(true);
+    row->insertWidget(row->count() - 2, lyricsBtn);
     m_nowPlaying = makeTable("nowPlaying", false);
     configureColumns(m_nowPlaying.view, "nowPlaying", {TrackModel::Title, TrackModel::Artist, TrackModel::Album, TrackModel::Length});
-    l->addWidget(m_nowPlaying.view, 1);
+    auto *npSplit = new QSplitter;
+    npSplit->setHandleWidth(1);
+    npSplit->addWidget(m_nowPlaying.view);
+    auto *lyrics = new LyricsPanel(m_player);
+    npSplit->addWidget(lyrics);
+    npSplit->setStretchFactor(0, 3);
+    npSplit->setStretchFactor(1, 2);
+    l->addWidget(npSplit, 1);
+    const bool showLyrics = Paths::settings()->value("ui/showLyrics", true).toBool();
+    lyricsBtn->setChecked(showLyrics);
+    lyrics->setVisible(showLyrics);
+    connect(lyricsBtn, &QPushButton::toggled, this, [lyrics](bool on) {
+        lyrics->setVisible(on);
+        Paths::settings()->setValue("ui/showLyrics", on);
+    });
     // Double-click jumps inside the queue instead of replacing it.
     disconnect(m_nowPlaying.view, &QTableView::doubleClicked, nullptr, nullptr);
     connect(m_nowPlaying.view, &QTableView::doubleClicked, this, [this](const QModelIndex &i) { m_player->playAt(i.row()); });
@@ -428,7 +466,24 @@ QWidget *CollectionPage::buildReports()
     m_reportInfo = new QLabel;
     m_reportInfo->setObjectName("dim");
     row->addWidget(m_reportInfo, 1);
+    auto *reviewBtn = flatButton(QStringLiteral("review duplicates"));
+    auto *artBtn = flatButton(QStringLiteral("find missing art now"));
+    row->addWidget(reviewBtn);
+    row->addWidget(artBtn);
     l->addLayout(row);
+    connect(reviewBtn, &QPushButton::clicked, this, [this] {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const auto groups = Reports::duplicateReview(m_all, m_db);
+        QApplication::restoreOverrideCursor();
+        if (groups.isEmpty()) { emit statusMessage(QStringLiteral("No duplicates found.")); return; }
+        DuplicateDialog dlg(m_lib, groups, this);
+        dlg.exec();
+    });
+    connect(artBtn, &QPushButton::clicked, this, [this] {
+        if (m_artFinder->isRunning()) { emit statusMessage(QStringLiteral("Already looking up album art.")); return; }
+        emit statusMessage(QStringLiteral("Looking up album art on MusicBrainz…"));
+        m_artFinder->start(true);
+    });
     m_report = makeTable("report", true);
     configureColumns(m_report.view, "report", {TrackModel::Title, TrackModel::Artist, TrackModel::Album, TrackModel::Genre,
                                                TrackModel::Length, TrackModel::Bitrate, TrackModel::Path});
@@ -600,7 +655,7 @@ void CollectionPage::refreshReports()
     case 0: {
         const auto groups = Reports::duplicates(m_all);
         for (const DuplicateGroup &g : groups) list += g.tracks;
-        m_reportInfo->setText(QStringLiteral("  %1 songs with more than one copy").arg(groups.size()));
+        m_reportInfo->setText(QStringLiteral("  %1 songs with more than one copy. Use review duplicates to clean them up.").arg(groups.size()));
         break;
     }
     case 1:
@@ -951,7 +1006,7 @@ void CollectionPage::showView(const QString &name)
     if (i < 0) return;
     m_pivots->button(i)->setChecked(true);
     m_stack->setCurrentIndex(i);
-    if (i == 6) refreshReports();
+    if (name == QLatin1String("reports")) refreshReports();
 }
 
 void CollectionPage::showPlaylist(qint64 id)

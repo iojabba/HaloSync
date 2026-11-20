@@ -32,6 +32,8 @@ struct Track {
     int     rating = Unrated;
     double  rgTrackGain = 0;  // dB, 0 = none
     double  rgAlbumGain = 0;
+    double  rgTrackPeak = 0;  // linear sample peak, 0 = none
+    double  rgAlbumPeak = 0;
     bool    hasArt = false;
     QString format;           // lowercase file extension
 

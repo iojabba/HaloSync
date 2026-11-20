@@ -1,4 +1,11 @@
 #include "SettingsPage.h"
+#include "Database.h"
+#include "ReplayGainJob.h"
+#include <QApplication>
+#include <QDoubleSpinBox>
+#include <QFutureWatcher>
+#include <QPointer>
+#include <QtConcurrent>
 #include "Library.h"
 #include "Paths.h"
 #include "Player.h"
@@ -80,9 +87,34 @@ SettingsPage::SettingsPage(Library *library, Player *player, QWidget *parent)
 
     // Playback
     l->addWidget(section("playback"));
-    auto *rg = new QCheckBox("Use ReplayGain to even out loudness (album gain when available)");
-    rg->setChecked(s->value("player/replayGain", true).toBool());
-    l->addWidget(rg);
+    auto *rgRow = new QHBoxLayout;
+    rgRow->addWidget(new QLabel("Volume leveling (ReplayGain):"));
+    auto *rgMode = new QComboBox;
+    rgMode->addItems({"off", "by song", "by album"});
+    rgMode->setToolTip("By album keeps the loudness differences between songs of one album, "
+                       "and falls back to the song value when there's no album value.");
+    rgMode->setCurrentIndex(int(m_player->gainMode()));
+    rgRow->addWidget(rgMode);
+    rgRow->addSpacing(16);
+    rgRow->addWidget(new QLabel("Pre-amp:"));
+    auto *preamp = new QDoubleSpinBox;
+    preamp->setRange(-12, 12);
+    preamp->setSingleStep(0.5);
+    preamp->setSuffix(" dB");
+    preamp->setValue(m_player->preampDb());
+    rgRow->addWidget(preamp);
+    rgRow->addStretch();
+    l->addLayout(rgRow);
+    l->addWidget(note("Songs are never made loud enough to clip. Songs without ReplayGain information play "
+                      "unchanged; Halo Sync can measure them (EBU R128) and save the result in their tags."));
+    auto *rgScanRow = new QHBoxLayout;
+    auto *rgScan = new QPushButton("measure songs without ReplayGain");
+    auto *rgStatus = new QLabel;
+    rgStatus->setObjectName("dim");
+    rgScanRow->addWidget(rgScan);
+    rgScanRow->addWidget(rgStatus);
+    rgScanRow->addStretch();
+    l->addLayout(rgScanRow);
     auto *startRow = new QHBoxLayout;
     startRow->addWidget(new QLabel("Show this page when Halo Sync opens:"));
     auto *startup = new QComboBox;
@@ -91,6 +123,27 @@ SettingsPage::SettingsPage(Library *library, Player *player, QWidget *parent)
     startRow->addWidget(startup);
     startRow->addStretch();
     l->addLayout(startRow);
+
+    l->addWidget(section("online information"));
+    auto *autoArt = new QCheckBox("Find missing album art automatically (MusicBrainz and the Cover Art Archive)");
+    autoArt->setChecked(s->value("library/autoArt", true).toBool());
+    l->addWidget(autoArt);
+    auto *lyricsOn = new QCheckBox("Show lyrics in Now Playing");
+    lyricsOn->setChecked(s->value("lyrics/enabled", true).toBool());
+    l->addWidget(lyricsOn);
+    auto *lyricsOnline = new QCheckBox("Look up lyrics online (LRCLIB) when a song has none");
+    lyricsOnline->setChecked(s->value("lyrics/online", true).toBool());
+    lyricsOnline->setEnabled(lyricsOn->isChecked());
+    l->addWidget(lyricsOnline);
+    l->addWidget(note("Only the artist, album and song names are sent. Covers are saved as folder.jpg next to the "
+                      "songs, and only for folders that hold a single album. Lyrics are kept in Halo Sync's data folder."));
+    connect(autoArt, &QCheckBox::toggled, this, [](bool on) { Paths::settings()->setValue("library/autoArt", on); });
+    connect(lyricsOn, &QCheckBox::toggled, this, [lyricsOnline](bool on) {
+        Paths::settings()->setValue("lyrics/enabled", on);
+        lyricsOnline->setEnabled(on);
+    });
+    connect(lyricsOnline, &QCheckBox::toggled, this, [](bool on) { Paths::settings()->setValue("lyrics/online", on); });
+
 
     // Look
     l->addWidget(section("display"));
@@ -190,7 +243,40 @@ SettingsPage::SettingsPage(Library *library, Player *player, QWidget *parent)
     });
     connect(rescan, &QPushButton::clicked, m_lib, &Library::rescan);
     connect(del, &QCheckBox::toggled, this, [](bool on) { Paths::settings()->setValue("library/deleteFiles", on); });
-    connect(rg, &QCheckBox::toggled, m_player, &Player::setReplayGain);
+    connect(rgMode, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this](int i) { m_player->setGainMode(Player::GainMode(i)); });
+    connect(preamp, qOverload<double>(&QDoubleSpinBox::valueChanged), m_player, &Player::setPreampDb);
+    connect(rgScan, &QPushButton::clicked, this, [this, rgScan, rgStatus] {
+        if (m_rgCancel) { *m_rgCancel = true; return; }      // second click cancels
+        const TrackList todo = ReplayGainJob::pending(m_lib->db()->allTracks(), true);
+        if (todo.isEmpty()) { rgStatus->setText("Every song already has ReplayGain information."); return; }
+        m_rgCancel = std::make_shared<std::atomic_bool>(false);
+        rgScan->setText("cancel");
+        auto cancel = m_rgCancel;
+        QPointer<QLabel> status(rgStatus);
+        auto *watcher = new QFutureWatcher<ReplayGainReport>(this);
+        connect(watcher, &QFutureWatcher<ReplayGainReport>::finished, this, [this, watcher, rgScan, rgStatus] {
+            const ReplayGainReport r = watcher->result();
+            watcher->deleteLater();
+            m_rgCancel.reset();
+            rgScan->setText("measure songs without ReplayGain");
+            rgStatus->setText(r.errors.contains("cancelled") ? QStringLiteral("Cancelled.")
+                              : QStringLiteral("Measured %1 songs, %2 couldn't be updated.").arg(r.written).arg(r.failed));
+            emit m_lib->db()->tracksChanged();
+            m_player->refreshCurrent();
+        });
+        // The job writes to the database from a worker thread, so it uses its own connection.
+        const QString dbFile = Paths::databaseFile();
+        watcher->setFuture(QtConcurrent::run([todo, cancel, status, dbFile] {
+            Database local;
+            if (!local.open(dbFile)) return ReplayGainReport{0, 0, int(todo.size()), {local.lastError()}};
+            return ReplayGainJob::run(&local, todo, [status](int done, int total) {
+                QMetaObject::invokeMethod(qApp, [status, done, total] {
+                    if (status) status->setText(QStringLiteral("Measuring %1 of %2…").arg(done).arg(total));
+                });
+            }, cancel.get());
+        }));
+    });
     connect(startup, &QComboBox::currentTextChanged, this, [](const QString &t) { Paths::settings()->setValue("ui/startPage", t); });
     connect(ffPath, &QLineEdit::editingFinished, this, [this, ffPath] {
         Paths::settings()->setValue("sync/ffmpeg", ffPath->text().trimmed());

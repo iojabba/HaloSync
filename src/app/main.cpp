@@ -4,6 +4,8 @@
 #include "MainWindow.h"
 #include "Paths.h"
 #include "Player.h"
+#include "ReplayGainJob.h"
+#include "TagIO.h"
 #include "SyncEngine.h"
 #include "Theme.h"
 #include "TrackModel.h"
@@ -17,6 +19,7 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <cstdio>
 
 using namespace halo;
@@ -62,7 +65,7 @@ int main(int argc, char *argv[])
     // Command-line jobs (--scan, --list, --sync-to) must work without a display.
     for (int i = 1; i < argc; ++i) {
         const QByteArray a(argv[i]);
-        if ((a == "--scan" || a == "--list" || a == "--sync-to") && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+        if ((a == "--scan" || a == "--list" || a == "--sync-to" || a == "--play" || a == "--replaygain") && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
             qputenv("QT_QPA_PLATFORM", "offscreen");
             break;
         }
@@ -86,7 +89,9 @@ int main(int argc, char *argv[])
     QCommandLineOption shot("screenshot", "Open the window, save a screenshot to <file> and exit.", "file");
     QCommandLineOption page("page", "Page to open: quickplay, collection, sync or settings.", "name");
     QCommandLineOption view("view", "Collection view: artists, albums, genres, songs, playlists, now playing, reports.", "name");
-    cli.addOptions({dataDir, addFolder, scan, list, syncTo, syncMode, shot, page, view});
+    QCommandLineOption playOpt("play", "Play <file or URL> without a window (repeat for a gapless queue) and exit at the end.", "source");
+    QCommandLineOption rgOpt("replaygain", "Calculate ReplayGain for songs that have none, write the tags and exit.");
+    cli.addOptions({dataDir, addFolder, scan, list, syncTo, syncMode, shot, page, view, playOpt, rgOpt});
     cli.process(app);
 
     Paths::init(cli.value(dataDir));
@@ -105,11 +110,22 @@ int main(int argc, char *argv[])
         out(err.isEmpty() ? QStringLiteral("monitoring %1").arg(f) : QStringLiteral("can't add %1: %2").arg(f, err));
     }
 
-    const bool headless = cli.isSet(scan) || cli.isSet(list) || cli.isSet(syncTo) || (cli.isSet(addFolder) && !cli.isSet(shot));
+    const bool headless = cli.isSet(scan) || cli.isSet(list) || cli.isSet(syncTo) || cli.isSet(rgOpt) ||
+                          (cli.isSet(addFolder) && !cli.isSet(shot));
     if (headless) {
         if (cli.isSet(scan) || cli.isSet(addFolder)) {
             const ScanResult r = library.rescanBlocking();
             out(QStringLiteral("scan: %1 new or changed, %2 removed, %3 unchanged").arg(r.changed.size()).arg(r.removed.size()).arg(r.unchanged));
+        }
+        if (cli.isSet(rgOpt)) {
+            const TrackList todo = ReplayGainJob::pending(db.allTracks(), true);
+            const ReplayGainReport r = ReplayGainJob::run(&db, todo);
+            out(QStringLiteral("replaygain: %1 measured, %2 written, %3 failed").arg(r.measured).arg(r.written).arg(r.failed));
+            for (const QString &e : r.errors) out("  " + e);
+            for (const Track &t : db.allTracks())
+                if (ReplayGainJob::hasGain(t))
+                    out(QStringLiteral("  %1: track %2 dB, album %3 dB").arg(t.displayTitle()).arg(t.rgTrackGain, 0, 'f', 2).arg(t.rgAlbumGain, 0, 'f', 2));
+            if (r.failed) return 2;
         }
         if (cli.isSet(list)) {
             for (const Track &t : db.allTracks())
@@ -118,6 +134,32 @@ int main(int argc, char *argv[])
         }
         if (cli.isSet(syncTo)) return runSync(library, cli.value(syncTo), cli.value(syncMode));
         return 0;
+    }
+
+    if (cli.isSet(playOpt)) {
+        Player player(&db);
+        const QStringList sources = cli.values(playOpt);
+        QElapsedTimer clock;
+        clock.start();
+        QObject::connect(&player, &Player::currentChanged, &player, [&] {
+            if (auto t = player.current())
+                out(QStringLiteral("%1 ms: now playing %2").arg(clock.elapsed()).arg(t->displayTitle()));
+        });
+        QObject::connect(&player, &Player::streamTitleChanged, &player, [](const QString &t) { out("stream title: " + t); });
+        QObject::connect(&player, &Player::error, &player, [](const QString &m) { out("error: " + m); });
+        QObject::connect(&player, &Player::playingChanged, &player, [&](bool playing) {
+            if (!playing && clock.elapsed() > 500) { out(QStringLiteral("%1 ms: finished").arg(clock.elapsed())); qApp->quit(); }
+        });
+        if (sources.size() == 1 && sources[0].contains("://")) {
+            player.playStream(QString(), sources[0]);
+        } else {
+            TrackList tracks;
+            for (const QString &src : sources)
+                if (auto t = TagIO::read(QFileInfo(src).absoluteFilePath())) tracks << *t;
+            if (tracks.isEmpty()) { out("nothing to play"); return 1; }
+            player.playTracks(tracks);
+        }
+        return app.exec();
     }
 
     Theme::apply(app);

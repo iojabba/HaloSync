@@ -1,5 +1,7 @@
 #pragma once
 #include <QWidget>
+#include <atomic>
+#include <memory>
 
 class QCheckBox;
 class QComboBox;
@@ -28,6 +30,7 @@ private:
     QListWidget *m_folders;
     QLabel *m_cacheLabel;
     QLabel *m_ffmpegLabel;
+    std::shared_ptr<std::atomic_bool> m_rgCancel;
 };
 
 } // namespace halo

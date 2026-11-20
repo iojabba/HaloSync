@@ -41,7 +41,7 @@ public:
     // Saves `image` as folder.jpg next to the album's files.
     bool pasteAlbumArt(const QString &albumArtist, const QString &album, const QImage &image, QString *error = nullptr);
     // Removes tracks from the collection; optionally deletes files (setting).
-    void removeFromCollection(const QVector<qint64> &ids, bool deleteFiles);
+    void removeFromCollection(const QVector<qint64> &ids, bool deleteFiles, bool toTrash = false);
 
     void applyScanResult(const ScanResult &r);
 

@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev qt6-multimedia-dev libqt6sql6-sqlite libtag1-dev ffmpeg ninja-build gstreamer1.0-plugins-good gstreamer1.0-libav
+      - run: sudo apt-get update && sudo apt-get install -y qt6-base-dev qt6-multimedia-dev libqt6sql6-sqlite libtag1-dev libavformat-dev libavcodec-dev libswresample-dev libavutil-dev ffmpeg ninja-build gstreamer1.0-plugins-good gstreamer1.0-libav
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
       - run: cd build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure
       - uses: actions/upload-artifact@v4
@@ -27,9 +27,15 @@ jobs:
         with: { version: '6.7.3', modules: 'qtmultimedia', arch: 'win64_msvc2019_64' }
       - name: TagLib via vcpkg
         run: vcpkg install taglib:x64-windows
+      - name: FFmpeg (LGPL shared build with headers and import libraries)
+        run: |
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip -OutFile ff.zip
+          Expand-Archive ff.zip ffzip
+          $d = Get-ChildItem ffzip -Directory | Select-Object -First 1
+          Move-Item $d.FullName ffmpeg-dev
       - name: Configure and build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHALO_BUILD_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHALO_BUILD_TESTS=OFF -DFFMPEG_ROOT="$pwd/ffmpeg-dev" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           cmake --build build --config Release
       - name: Bundle Qt and TagLib
         run: |
@@ -39,19 +45,21 @@ jobs:
           windeployqt --release --no-translations dist\halo-sync.exe
           # Visual C++ runtime, so the app runs on PCs without the redistributable
           foreach ($f in 'msvcp140.dll','msvcp140_1.dll','vcruntime140.dll','vcruntime140_1.dll') { copy "$env:SystemRoot\System32\$f" dist\ }
-      - name: Bundle ffmpeg (LGPL build) for format conversion
+      - name: Bundle FFmpeg (libraries for playback, ffmpeg.exe for conversion)
         run: |
-          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip -OutFile ff.zip
-          Expand-Archive ff.zip ff
-          $d = Get-ChildItem ff -Directory | Select-Object -First 1
-          copy "$($d.FullName)\bin\ffmpeg.exe" dist\
-          copy "$($d.FullName)\LICENSE.txt" dist\ffmpeg-LICENSE.txt
+          copy ffmpeg-dev\bin\*.dll dist\
+          copy ffmpeg-dev\bin\ffmpeg.exe dist\
+          copy ffmpeg-dev\LICENSE.txt dist\ffmpeg-LICENSE.txt
           copy README.md dist\
-      - name: Smoke test (start, scan an empty library, exit)
+      - name: Smoke test (start, decode with FFmpeg, measure loudness, exit)
         run: |
-          $p = Start-Process dist\halo-sync.exe -ArgumentList '--data-dir','smoke','--scan','--list' -Wait -PassThru
+          mkdir smoke-music
+          dist\ffmpeg.exe -hide_banner -v error -f lavfi -i "sine=frequency=997:duration=3" -metadata album=Smoke smoke-music\a.flac
+          $p = Start-Process dist\halo-sync.exe -ArgumentList '--data-dir','smoke','--add-folder',"$pwd\smoke-music",'--replaygain' -Wait -PassThru -RedirectStandardOutput rg.txt
+          Get-Content rg.txt
           if ($p.ExitCode -ne 0) { throw "halo-sync.exe exited with $($p.ExitCode)" }
-          dist\ffmpeg.exe -hide_banner -version | Select-Object -First 1
+          # a -21.07 LUFS tone needs +3.07 dB to reach -18 LUFS
+          if (-not (Select-String -Path rg.txt -Pattern 'track 3\.0[0-9] dB' -Quiet)) { throw "unexpected ReplayGain result" }
       - run: Compress-Archive dist\* halo-sync-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with: { name: halo-sync-windows, path: halo-sync-windows-x64.zip }

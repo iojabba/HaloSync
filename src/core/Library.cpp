@@ -101,8 +101,9 @@ ScanResult Library::rescanBlocking()
 
 void Library::applyScanResult(const ScanResult &r)
 {
+    const QSet<QString> ignored = m_db->ignoredPaths();
     m_db->begin();
-    for (const Track &t : r.changed) m_db->upsertTrack(t);
+    for (const Track &t : r.changed) if (!ignored.contains(t.path)) m_db->upsertTrack(t);
     if (!r.removed.isEmpty()) m_db->removeTracks(r.removed);
     m_db->commit();
     watchDirectories(r.directories);
@@ -185,13 +186,20 @@ bool Library::pasteAlbumArt(const QString &albumArtist, const QString &album, co
     return ok;
 }
 
-void Library::removeFromCollection(const QVector<qint64> &ids, bool deleteFiles)
+void Library::removeFromCollection(const QVector<qint64> &ids, bool deleteFiles, bool toTrash)
 {
-    if (deleteFiles) {
-        for (qint64 id : ids)
-            if (auto t = m_db->track(id))
-                if (!QFile::remove(t->path)) logLine("library", "couldn't delete " + t->path);
+    QStringList kept;
+    for (qint64 id : ids) {
+        auto t = m_db->track(id);
+        if (!t) continue;
+        bool gone = false;
+        if (deleteFiles) {
+            gone = toTrash ? QFile::moveToTrash(t->path) : QFile::remove(t->path);
+            if (!gone) logLine("library", "couldn't delete " + t->path);
+        }
+        if (!gone) kept << t->path;   // still on disk: don't let the next scan bring it back
     }
+    if (!kept.isEmpty()) m_db->ignorePaths(kept);
     m_db->removeTracks(ids);
 }
 

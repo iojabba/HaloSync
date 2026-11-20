@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(HaloSync VERSION 0.1.0 LANGUAGES CXX)
+project(HaloSync VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,23 @@ else()
     set(HALO_TAGLIB PkgConfig::TAGLIB)
 endif()
 
+# FFmpeg libraries for the gapless decoder: pkg-config on Linux/macOS; on
+# Windows point FFMPEG_ROOT at a "shared" FFmpeg build (include/ and lib/).
+set(FFMPEG_ROOT "" CACHE PATH "FFmpeg dev folder with include/ and lib/ (Windows)")
+if(FFMPEG_ROOT)
+    add_library(halo_ffmpeg INTERFACE)
+    target_include_directories(halo_ffmpeg INTERFACE "${FFMPEG_ROOT}/include")
+    foreach(lib avformat avcodec swresample avutil)
+        find_library(FFMPEG_${lib}_LIB NAMES ${lib} PATHS "${FFMPEG_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+        target_link_libraries(halo_ffmpeg INTERFACE ${FFMPEG_${lib}_LIB})
+    endforeach()
+    set(HALO_FFMPEG halo_ffmpeg)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
+    set(HALO_FFMPEG PkgConfig::FFMPEG)
+endif()
+
 # ---------------------------------------------------------------- core library
 add_library(halocore STATIC
     src/core/Track.h
@@ -34,14 +51,22 @@ add_library(halocore STATIC
     src/core/DeviceDetect.h     src/core/DeviceDetect.cpp
     src/core/Reports.h          src/core/Reports.cpp
     src/core/MusicBrainz.h      src/core/MusicBrainz.cpp
+    src/core/Decoder.h          src/core/Decoder.cpp
+    src/core/Loudness.h         src/core/Loudness.cpp
+    src/core/ReplayGainJob.h    src/core/ReplayGainJob.cpp
+    src/core/Lyrics.h           src/core/Lyrics.cpp
+    src/core/ArtFinder.h        src/core/ArtFinder.cpp
+    src/core/Radio.h            src/core/Radio.cpp
+    src/core/Discover.h         src/core/Discover.cpp
 )
 target_include_directories(halocore PUBLIC src/core)
-target_link_libraries(halocore PUBLIC Qt6::Core Qt6::Gui Qt6::Sql Qt6::Network Qt6::Concurrent ${HALO_TAGLIB})
+target_link_libraries(halocore PUBLIC Qt6::Core Qt6::Gui Qt6::Sql Qt6::Network Qt6::Concurrent ${HALO_TAGLIB} ${HALO_FFMPEG})
 
 # ---------------------------------------------------------------- application
 set(APP_SOURCES
     src/app/main.cpp
     src/app/Theme.h             src/app/Theme.cpp
+    src/app/AudioEngine.h       src/app/AudioEngine.cpp
     src/app/Player.h            src/app/Player.cpp
     src/app/TrackModel.h        src/app/TrackModel.cpp
     src/app/MainWindow.h        src/app/MainWindow.cpp
@@ -54,6 +79,10 @@ set(APP_SOURCES
     src/app/AlbumLookupDialog.h src/app/AlbumLookupDialog.cpp
     src/app/MiniPlayer.h        src/app/MiniPlayer.cpp
     src/app/MergeList.h         src/app/MergeList.cpp
+    src/app/LyricsPanel.h       src/app/LyricsPanel.cpp
+    src/app/RadioView.h         src/app/RadioView.cpp
+    src/app/DiscoverView.h      src/app/DiscoverView.cpp
+    src/app/DuplicateDialog.h   src/app/DuplicateDialog.cpp
 )
 if(Qt6DBus_FOUND AND UNIX AND NOT APPLE)
     list(APPEND APP_SOURCES src/app/Mpris.h src/app/Mpris.cpp)
@@ -72,7 +101,7 @@ install(TARGETS halo-sync RUNTIME DESTINATION bin BUNDLE DESTINATION .)
 # ---------------------------------------------------------------- tests
 if(HALO_BUILD_TESTS AND Qt6Test_FOUND)
     enable_testing()
-    foreach(t test_autoplaylist test_playlistio test_library test_sync)
+    foreach(t test_autoplaylist test_playlistio test_library test_sync test_decoder test_online test_features)
         add_executable(${t} tests/${t}.cpp)
         target_link_libraries(${t} PRIVATE halocore Qt6::Test)
         add_test(NAME ${t} COMMAND ${t})

@@ -34,7 +34,7 @@ QNetworkRequest MusicBrainz::request(const QUrl &url) const
 {
     QNetworkRequest r(url);
     // MusicBrainz asks clients to identify themselves.
-    r.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("HaloSync/0.1 (open-source music manager)"));
+    r.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("HaloSync/0.2 (open-source music manager)"));
     r.setRawHeader("Accept", "application/json");
     r.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     r.setTransferTimeout(20000);

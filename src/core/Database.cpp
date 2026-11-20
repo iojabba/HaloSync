@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QUuid>
 #include <QVariant>
+#include <QSet>
 
 namespace halo {
 
@@ -15,7 +16,7 @@ qint64 now() { return QDateTime::currentSecsSinceEpoch(); }
 const char *kTrackColumns =
     "id, path, title, artist, album_artist, album, genre, composer, year, track_no, disc_no, "
     "duration_ms, bitrate, sample_rate, size, mtime, date_added, last_played, play_count, rating, "
-    "rg_track_gain, rg_album_gain, has_art, format";
+    "rg_track_gain, rg_album_gain, has_art, format, rg_track_peak, rg_album_peak";
 
 Track readTrack(const QSqlQuery &q)
 {
@@ -45,6 +46,8 @@ Track readTrack(const QSqlQuery &q)
     t.rgAlbumGain = q.value(c++).toDouble();
     t.hasArt      = q.value(c++).toBool();
     t.format      = q.value(c++).toString();
+    t.rgTrackPeak = q.value(c++).toDouble();
+    t.rgAlbumPeak = q.value(c++).toDouble();
     return t;
 }
 } // namespace
@@ -109,9 +112,26 @@ bool Database::createSchema()
         " UNIQUE(device_id, kind, key))",
         "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)",
         "INSERT OR IGNORE INTO meta(k, v) VALUES('schema', '1')",
+        // Schema 2 (0.2): radio favourites and cached content hashes for the duplicate finder.
+        "CREATE TABLE IF NOT EXISTS radio_stations (id INTEGER PRIMARY KEY, name TEXT, url TEXT UNIQUE NOT NULL,"
+        " homepage TEXT, favicon TEXT, tags TEXT, country TEXT, codec TEXT, bitrate INTEGER DEFAULT 0, added_at INTEGER)",
+        "CREATE TABLE IF NOT EXISTS file_hashes (path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hash TEXT)",
+        // Files the user removed from the collection but kept on disk: scans skip them.
+        "CREATE TABLE IF NOT EXISTS ignored_files (path TEXT PRIMARY KEY, ignored_at INTEGER)",
+        "CREATE INDEX IF NOT EXISTS idx_history_track ON history(track_id, played_at)",
     };
     for (const char *s : stmts)
         if (!exec(QString::fromUtf8(s))) return false;
+    // Columns added after schema 1.
+    QSet<QString> cols;
+    QSqlQuery info(m_db);
+    info.exec("PRAGMA table_info(tracks)");
+    while (info.next()) cols.insert(info.value(1).toString());
+    for (const char *c : {"rg_track_peak", "rg_album_peak"})
+        if (!cols.contains(QLatin1String(c)) &&
+            !exec(QStringLiteral("ALTER TABLE tracks ADD COLUMN %1 REAL DEFAULT 0").arg(QLatin1String(c))))
+            return false;
+    exec("UPDATE meta SET v='2' WHERE k='schema'");
     return true;
 }
 
@@ -218,14 +238,15 @@ qint64 Database::upsertTrack(const Track &t)
     QSqlQuery q(m_db);
     q.prepare(
         "INSERT INTO tracks(path, title, artist, album_artist, album, genre, composer, year, track_no, disc_no,"
-        " duration_ms, bitrate, sample_rate, size, mtime, date_added, rg_track_gain, rg_album_gain, has_art, format)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " duration_ms, bitrate, sample_rate, size, mtime, date_added, rg_track_gain, rg_album_gain, has_art, format,"
+        " rg_track_peak, rg_album_peak)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(path) DO UPDATE SET title=excluded.title, artist=excluded.artist, album_artist=excluded.album_artist,"
         " album=excluded.album, genre=excluded.genre, composer=excluded.composer, year=excluded.year,"
         " track_no=excluded.track_no, disc_no=excluded.disc_no, duration_ms=excluded.duration_ms,"
         " bitrate=excluded.bitrate, sample_rate=excluded.sample_rate, size=excluded.size, mtime=excluded.mtime,"
         " rg_track_gain=excluded.rg_track_gain, rg_album_gain=excluded.rg_album_gain, has_art=excluded.has_art,"
-        " format=excluded.format");
+        " format=excluded.format, rg_track_peak=excluded.rg_track_peak, rg_album_peak=excluded.rg_album_peak");
     q.addBindValue(t.path);
     q.addBindValue(t.title);
     q.addBindValue(t.artist);
@@ -246,6 +267,8 @@ qint64 Database::upsertTrack(const Track &t)
     q.addBindValue(t.rgAlbumGain);
     q.addBindValue(t.hasArt ? 1 : 0);
     q.addBindValue(t.format);
+    q.addBindValue(t.rgTrackPeak);
+    q.addBindValue(t.rgAlbumPeak);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         logLine("db", "upsert failed for " + t.path + ": " + m_lastError);
@@ -286,6 +309,34 @@ void Database::setRating(qint64 id, int rating)
     q.addBindValue(id);
     q.exec();
     emit tracksChanged();
+}
+
+void Database::mergeTrackStats(qint64 keep, const QVector<qint64> &from)
+{
+    if (from.isEmpty()) return;
+    begin();
+    for (qint64 id : from) {
+        if (id == keep) continue;
+        QSqlQuery q(m_db);
+        q.prepare("UPDATE tracks SET play_count = play_count + (SELECT play_count FROM tracks WHERE id = :f),"
+                  " last_played = MAX(last_played, (SELECT last_played FROM tracks WHERE id = :f)),"
+                  " rating = CASE WHEN rating = 0 THEN (SELECT rating FROM tracks WHERE id = :f) ELSE rating END,"
+                  " date_added = MIN(date_added, (SELECT date_added FROM tracks WHERE id = :f))"
+                  " WHERE id = :k");
+        q.bindValue(":f", id);
+        q.bindValue(":k", keep);
+        q.exec();
+        for (const char *sql : {"UPDATE history SET track_id = :k WHERE track_id = :f",
+                                "UPDATE playlist_items SET track_id = :k WHERE track_id = :f"}) {
+            QSqlQuery u(m_db);
+            u.prepare(QString::fromLatin1(sql));
+            u.bindValue(":k", keep);
+            u.bindValue(":f", id);
+            u.exec();
+        }
+    }
+    m_pendingTracksChanged = true;
+    commit();
 }
 
 void Database::recordPlay(qint64 id)
@@ -561,6 +612,110 @@ void Database::removeSyncItem(qint64 deviceId, const SyncItem &item)
     q.addBindValue(item.key);
     q.exec();
     emit devicesChanged();
+}
+
+// ------------------------------------------------------------------ radio
+QVector<RadioStation> Database::radioStations()
+{
+    QVector<RadioStation> out;
+    QSqlQuery q(m_db);
+    q.exec("SELECT id, name, url, homepage, favicon, tags, country, codec, bitrate FROM radio_stations ORDER BY name COLLATE NOCASE");
+    while (q.next()) {
+        RadioStation s;
+        s.id = q.value(0).toLongLong();
+        s.name = q.value(1).toString();
+        s.url = q.value(2).toString();
+        s.homepage = q.value(3).toString();
+        s.favicon = q.value(4).toString();
+        s.tags = q.value(5).toString();
+        s.country = q.value(6).toString();
+        s.codec = q.value(7).toString();
+        s.bitrate = q.value(8).toInt();
+        out << s;
+    }
+    return out;
+}
+
+qint64 Database::addRadioStation(const RadioStation &s)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO radio_stations(name, url, homepage, favicon, tags, country, codec, bitrate, added_at)"
+              " VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET name=excluded.name");
+    for (const QVariant &v : {QVariant(s.name), QVariant(s.url), QVariant(s.homepage), QVariant(s.favicon), QVariant(s.tags),
+                              QVariant(s.country), QVariant(s.codec), QVariant(s.bitrate), QVariant(now())})
+        q.addBindValue(v);
+    if (!q.exec()) { m_lastError = q.lastError().text(); return 0; }
+    QSqlQuery id(m_db);
+    id.prepare("SELECT id FROM radio_stations WHERE url = ?");
+    id.addBindValue(s.url);
+    id.exec();
+    emit radioChanged();
+    return id.next() ? id.value(0).toLongLong() : 0;
+}
+
+void Database::removeRadioStation(qint64 id)
+{
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM radio_stations WHERE id = ?");
+    q.addBindValue(id);
+    q.exec();
+    emit radioChanged();
+}
+
+// ------------------------------------------------------------------ history
+QVector<QPair<qint64, qint64>> Database::history(qint64 since)
+{
+    QVector<QPair<qint64, qint64>> out;
+    QSqlQuery q(m_db);
+    q.prepare("SELECT track_id, played_at FROM history WHERE played_at >= ? ORDER BY played_at DESC");
+    q.addBindValue(since);
+    q.exec();
+    while (q.next()) out.push_back({q.value(0).toLongLong(), q.value(1).toLongLong()});
+    return out;
+}
+
+QString Database::cachedHash(const QString &path, qint64 size, qint64 mtime)
+{
+    QSqlQuery q(m_db);
+    q.prepare("SELECT hash FROM file_hashes WHERE path = ? AND size = ? AND mtime = ?");
+    q.addBindValue(path);
+    q.addBindValue(size);
+    q.addBindValue(mtime);
+    q.exec();
+    return q.next() ? q.value(0).toString() : QString();
+}
+
+void Database::storeHash(const QString &path, qint64 size, qint64 mtime, const QString &hash)
+{
+    QSqlQuery q(m_db);
+    q.prepare("INSERT OR REPLACE INTO file_hashes(path, size, mtime, hash) VALUES(?,?,?,?)");
+    q.addBindValue(path);
+    q.addBindValue(size);
+    q.addBindValue(mtime);
+    q.addBindValue(hash);
+    q.exec();
+}
+
+void Database::ignorePaths(const QStringList &paths)
+{
+    begin();
+    for (const QString &p : paths) {
+        QSqlQuery q(m_db);
+        q.prepare("INSERT OR REPLACE INTO ignored_files(path, ignored_at) VALUES(?, ?)");
+        q.addBindValue(p);
+        q.addBindValue(now());
+        q.exec();
+    }
+    commit();
+}
+
+QSet<QString> Database::ignoredPaths()
+{
+    QSet<QString> out;
+    QSqlQuery q(m_db);
+    q.exec("SELECT path FROM ignored_files");
+    while (q.next()) out.insert(q.value(0).toString());
+    return out;
 }
 
 } // namespace halo

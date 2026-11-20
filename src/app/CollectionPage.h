@@ -16,7 +16,10 @@ class QTableView;
 
 namespace halo {
 
+class ArtFinder;
+class DiscoverView;
 class MergeList;
+class RadioView;
 class Player;
 
 class CollectionPage : public QWidget {
@@ -24,7 +27,7 @@ class CollectionPage : public QWidget {
 public:
     CollectionPage(Library *library, Player *player, QWidget *parent = nullptr);
     void focusSearch();
-    void showView(const QString &name);    // artists|albums|genres|songs|playlists|now playing|reports
+    void showView(const QString &name);    // artists|albums|genres|songs|playlists|now playing|radio|discover|reports
     void showPlaylist(qint64 id);
     void showArtist(const QString &name);
     void showAlbum(const QString &key);
@@ -100,6 +103,9 @@ private:
     TableBundle m_report;
     QLabel *m_reportInfo = nullptr;
     QLabel *m_summary = nullptr;
+    RadioView *m_radio = nullptr;
+    DiscoverView *m_discover = nullptr;
+    ArtFinder *m_artFinder = nullptr;
 };
 
 } // namespace halo
